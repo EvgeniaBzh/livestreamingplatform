@@ -1,0 +1,35 @@
+/** 
+ * @file ChatTabs.css
+ * @author Simon Tenedero
+ * @created 2025-07-07
+ * @lastModified 2025-07-07
+ * @description Styles for the chat tabs component, including animated gradient border for active tab
+ * original tutorial: https://www.youtube.com/watch?v=-VOUK-xFAyk
+ */
+
+@property --gradient-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+
+.active-tab-container {
+  background: conic-gradient(
+    from var(--gradient-angle),
+    #637c54,
+    #2d8f85,
+    #0e4b50,
+    #2d8f85,
+    #637c54
+  );
+  animation: rotation 5s linear infinite;
+}
+
+@keyframes rotation {
+  0% {
+    --gradient-angle: 0deg;
+  }
+  100% {
+    --gradient-angle: 360deg;
+  }
+}

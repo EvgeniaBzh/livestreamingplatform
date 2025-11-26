@@ -1,0 +1,78 @@
+version: '3'
+
+services:
+  backend:
+    build:
+      context: ./backend
+    environment:
+      - DB_HOST=database
+      - DB_USER=root
+      - DB_PASSWORD=pwd
+      - DB_NAME=livestream_db
+      - YOUTUBE_API_KEY=${YOUTUBE_API_KEY}
+    env_file:
+      - .env
+    networks:
+      - backend-frontend
+      - backend-database
+      - analysis-backend
+    ports:
+      - "8080:8080"
+    restart: always
+    volumes:
+      - ./backend/src/:/usr/src/app/src/
+      - ./backend/public/:/usr/src/app/public/
+
+  database:
+    image: mysql:latest
+    build:
+      context: ./database
+    environment:
+      - MYSQL_ROOT_PASSWORD=pwd
+      - MYSQL_DATABASE=livestream_db
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "--host=localhost"]
+      interval: 10s
+      retries: 3
+    ports:
+      - "3306:3306"
+    networks:
+      - backend-database
+    volumes:
+      - db-data:/var/lib/mysql  # Persist MySQL data to a named volume
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "3000:3000"
+    networks:
+      - backend-frontend
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend/src/:/usr/src/app/src/
+      - ./frontend/public/:/usr/src/app/public/
+
+  analysis:
+    build:
+      context: ./analysis
+    environment: #have to specify the environment variables
+      - GENAI_API_KEY=${GENAI_API_KEY}
+    env_file: #has to specify the env file
+      - .env
+    ports:
+      - "5001:5001"
+    networks:
+      - analysis-backend
+    volumes:
+      - ./analysis:/app  # Mount the sentiment-service directory on the host to /app in the container
+
+networks:
+  backend-frontend:
+  backend-database:
+  analysis-backend:
+    driver: bridge
+
+volumes:
+  db-data:  # Define a named volume for the database
