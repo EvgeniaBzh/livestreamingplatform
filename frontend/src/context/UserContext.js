@@ -1,78 +1,143 @@
 /**
  * @file UserContext.js
- * @author Simon Tenedero
+ * @author Simon Tenedero, Yevheniia Bazhmaieva
  * @created 2025-06-11
- * @lastModified 2025-07-02
- * @description file containing UserContext, decided to implement a user context to prevent prop drilling
+ * @lastModified 2025-11-26
+ * @description file containing UserContext
  */
 
 import { createContext, useContext, useState, useEffect } from 'react';
-import { addUser, fetchUserInfo } from '../utils/usersUtils';
+import { fetchUserInfo } from '../utils/usersUtils';
 import { logWebsiteUsage } from '../utils/livestreamsUtils';
 import { getAuth, onAuthStateChanged } from 'firebase/auth';
-import { doc, onSnapshot } from 'firebase/firestore';
+import { doc, onSnapshot, setDoc, updateDoc, arrayUnion, getDoc } from 'firebase/firestore';
 import { db } from '../firebaseConfig.js';
+import { useAuth } from '../hooks/useAuth.js';
 
-//1. create the context
 const UserContext = createContext();
 
-/**
- * 2. Hook to access user context
- *
- * @returns {Object} Object containing user, setUser, loading, loginTime, and setLoginTime
- */
 export const useUser = () => {
-  const context = useContext(UserContext); //provides the context value provided by the nearest UserProvider
+  const context = useContext(UserContext);
   if (!context) {
-    //this ensures useUser is not used with children not nested in a provider - this catches 'undefined'
     throw new Error('useUser must be used within a UserProvider');
   }
   return context;
 };
 
-/**
- * 3. create the context provider, 'children' is a special prop that represents any nested JSX inside the component
- *
- * UserProvider component provides user authentication state and user data to the application.
- * It listens for authentication state changes and updates the user context accordingly.
- */
 export const UserProvider = ({ children }) => {
-  const [user, setUser] = useState(null); //create a local state inside UserProvider
-  const [loading, setLoading] = useState(true); //used when auth state hasn't resolved yet - "checking if user is signed in on app startup"
-  const [loginTime, setLoginTime] = useState(null); // Session tracking
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [loginTime, setLoginTime] = useState(null);
+
+  const { handleSignOut } = useAuth();
 
   useEffect(() => {
     const auth = getAuth();
-    let userDocUnsubscribe = null; //track the user document listener
+    let userDocUnsubscribe = null;
 
-    //this will trigger whenever handleSignIn() or handleSignOut() is called in ProfileMenu.js
     const unsubscribe = onAuthStateChanged(auth, async (authUser) => {
-      //clean up previous user document listener
       if (userDocUnsubscribe) {
         userDocUnsubscribe();
         userDocUnsubscribe = null;
       }
 
       if (authUser) {
-        //if user is signed in, initialize local user variable
         try {
-          const existingUserData = await fetchUserInfo(authUser.uid);
+          await authUser.getIdToken();
+          let existingUserData = await fetchUserInfo(authUser.uid);
+
+          // --- 1. ЛОГІКА СТВОРЕННЯ НОВОГО ЮЗЕРА ---
+          if (!existingUserData) {
+            console.log('User document not found. Creating manually...');
+
+            // ТУТ ГОЛОВНА ЛОГІКА РОЛЕЙ
+            // Ваша пошта -> Admin, всі інші -> Default
+            const isAdminEmail = authUser.email === "bazhmaevaevgenia@gmail.com";
+            
+            const targetRoleId = isAdminEmail ? "admin" : "default"; 
+            const targetRoleName = isAdminEmail ? "Admin" : "Default";
+
+            // A. Створюємо приватний документ (users)
+            const newUserRef = doc(db, 'users', authUser.uid);
+            const newUserData = {
+              uid: authUser.uid,
+              email: authUser.email,
+              displayName: authUser.displayName || 'New User',
+              photoURL: authUser.photoURL || '',
+              role: {
+                roleId: targetRoleId, // "default" або "admin"
+                roleName: targetRoleName,
+                updatedRoleAt: new Date(),
+              },
+              createdAt: new Date(),
+              isActive: true,
+            };
+            await setDoc(newUserRef, newUserData);
+
+            // B. Створюємо публічний документ (publicUserInfo)
+            const publicUserRef = doc(db, 'publicUserInfo', authUser.uid);
+            await setDoc(publicUserRef, {
+              uid: authUser.uid,
+              username: authUser.displayName || 'New User',
+              displayName: authUser.displayName || 'New User',
+              profilePicture: authUser.photoURL || '',
+              bio: 'No bio available.',
+            });
+
+            // C. Додаємо юзера в список учасників ролі (roles/{roleId})
+            try {
+              const roleRef = doc(db, 'roles', targetRoleId);
+              
+              // Перевіримо, чи існує документ ролі, щоб не було помилки
+              const roleSnap = await getDoc(roleRef);
+              if (roleSnap.exists()) {
+                  await updateDoc(roleRef, {
+                    members: arrayUnion({
+                      userId: authUser.uid,
+                      displayName: authUser.displayName || 'New User',
+                      photoURL: authUser.photoURL || '',
+                    }),
+                  });
+                  console.log(`User added to ${targetRoleId} role members.`);
+              } else {
+                  console.warn(`Role document '${targetRoleId}' does not exist!`);
+              }
+            } catch (err) {
+              console.error('Error adding user to role list:', err);
+            }
+
+            existingUserData = newUserData;
+            console.log(`User created successfully as ${targetRoleName}!`);
+          }
+
+          // --- 2. САМОЛІКУВАННЯ (Якщо юзер є, а публічного профілю немає) ---
+          const publicInfoRef = doc(db, 'publicUserInfo', authUser.uid);
+          const publicInfoSnap = await getDoc(publicInfoRef);
+          if (!publicInfoSnap.exists()) {
+             await setDoc(publicInfoRef, {
+                uid: authUser.uid,
+                username: authUser.displayName || 'User',
+                displayName: authUser.displayName || 'User',
+                profilePicture: authUser.photoURL || '',
+                bio: 'No bio available.',
+             });
+          }
+
+          // --- ЗАВАНТАЖЕННЯ В STATE ---
           if (existingUserData) {
             const userInfo = {
-              //user authUser as source of truth when possible
-              uid: authUser.uid, //unique id for firebase document
-              email: authUser.email, //google email
-              displayName: authUser.displayName, //username from google account
-              photoURL: authUser.photoURL, //profile photo from google account
-
-              //these are custom fields, so we must use firebase for this.
-              username: existingUserData.username, //custom name for our website (set in profile menu)
-              profilePicture: existingUserData.profilePicture, //custom photo for our website (set in profile menu)
-              role: existingUserData.role.roleName, //role
+              uid: authUser.uid,
+              email: authUser.email,
+              displayName: authUser.displayName,
+              photoURL: authUser.photoURL,
+              username: existingUserData.username || authUser.displayName,
+              profilePicture: existingUserData.profilePicture || authUser.photoURL,
+              // Зберігаємо повний об'єкт ролі
+              role: existingUserData.role || { roleId: 'default', roleName: 'Default' },
             };
             setUser(userInfo);
 
-            //set up real-time listener for user document changes
+            // Слухач змін у базі
             const userDocRef = doc(db, 'users', authUser.uid);
             let isInitialLoad = true;
 
@@ -80,145 +145,70 @@ export const UserProvider = ({ children }) => {
               userDocRef,
               (docSnapshot) => {
                 if (docSnapshot.exists()) {
-                  //skip the initial load to avoid immediate reload
                   if (isInitialLoad) {
                     isInitialLoad = false;
                     return;
                   }
 
-                  //only reload if this is a server update (not from cache or pending writes)
                   if (
                     !docSnapshot.metadata.hasPendingWrites &&
                     !docSnapshot.metadata.fromCache
                   ) {
                     const updatedUserData = docSnapshot.data();
 
-                    //check if role changed (most important change requiring reload)
                     if (
-                      updatedUserData.role?.roleName !==
-                      existingUserData.role?.roleName
+                      updatedUserData.role?.roleId !==
+                      existingUserData.role?.roleId
                     ) {
-                      console.log(
-                        'User role changed, initiating page reload...'
-                      );
-
-                      //notify user of permission change, then force reload
-                      alert(
-                        'Your account permissions have been updated. The page will now reload.'
-                      );
+                      console.log('Role changed, reloading...');
+                      alert('Your permissions have been updated. Reloading.');
                       window.location.reload();
                     } else {
-                      //for other changes, just update the context without reload
-                      console.log('User data updated, refreshing context...');
-                      const updatedUserInfo = {
-                        uid: authUser.uid,
-                        email: authUser.email,
-                        displayName: authUser.displayName,
-                        photoURL: authUser.photoURL,
-                        username: updatedUserData.username,
-                        profilePicture: updatedUserData.profilePicture,
-                        role: updatedUserData.role?.roleName || 'unrecognized',
-                      };
-                      setUser(updatedUserInfo);
+                      setUser((prev) => ({
+                        ...prev,
+                        ...updatedUserData,
+                        role: updatedUserData.role,
+                      }));
                     }
                   }
                 }
               },
-              (error) => {
-                console.error(
-                  'Error listening to user document changes:',
-                  error
-                );
-              }
+              (error) => console.error(error)
             );
-          } else {
-            const newUserInfo = {
-              //user authUser as source of truth when possible
-              uid: authUser.uid,
-              email: authUser.email,
-              username: authUser.displayName,
-              photoURL: authUser.photoURL,
 
-              //since we don't have prev. user data, we use authUser data to initialize display
-              displayName: authUser.displayName,
-              profilePicture: authUser.photoURL,
-              role: 'unrecognized', //default assign users to unrecognized, only have access to youtube chat
-            };
-            await addUser(newUserInfo);
-            setUser(newUserInfo);
+            // Логування входу
+            const isFreshSignIn = sessionStorage.getItem('freshSignIn') === 'true';
+            if (isFreshSignIn) {
+              logWebsiteUsage(authUser.uid, `User logged in`, 'loginHistory');
+              sessionStorage.removeItem('freshSignIn');
+            }
 
-            //for new users, also set up the listener after initial creation
-            const userDocRef = doc(db, 'users', authUser.uid);
-            let isInitialLoad = true;
-
-            userDocUnsubscribe = onSnapshot(userDocRef, (docSnapshot) => {
-              if (docSnapshot.exists() && !isInitialLoad) {
-                if (
-                  !docSnapshot.metadata.hasPendingWrites &&
-                  !docSnapshot.metadata.fromCache
-                ) {
-                  const updatedUserData = docSnapshot.data();
-
-                  if (updatedUserData.role?.roleName !== 'unrecognized') {
-                    console.log(
-                      'New user role assigned, initiating page reload...'
-                    );
-                    alert(
-                      'Your account permissions have been updated. The page will now reload.'
-                    );
-                    window.location.reload();
-                  }
-                }
-              }
-              isInitialLoad = false;
-            });
+            const storedLoginTime = sessionStorage.getItem('loginTime');
+            setLoginTime(storedLoginTime ? new Date(parseInt(storedLoginTime)) : new Date());
           }
-
-          //track login time and log usage
-          const currentTime = new Date();
-          setLoginTime(currentTime);
-          console.log('loginTime=', currentTime);
-          logWebsiteUsage(
-            authUser.uid,
-            `User logged in at ${currentTime.toUTCString()}`
-          );
         } catch (error) {
           console.error('Error setting up user:', error);
           setUser(null);
         }
-      }
-      //clean-up, user signs out
-      else {
-        //log website usage while user data is still available.
-        if (user && loginTime) {
-          const logoutTime = new Date();
-          const sessionDuration =
-            (logoutTime.getTime() - loginTime.getTime()) / (1000 * 60);
-          logWebsiteUsage(
-            user.uid,
-            `User logged out at ${logoutTime.toUTCString()}, with a session time of ${sessionDuration} minutes.`
-          );
-        }
+      } else {
         setUser(null);
         setLoginTime(null);
+        localStorage.removeItem('lastVideoUrl');
+        localStorage.removeItem('lastPage');
       }
-      setLoading(false); //auth state is now determined.
+      setLoading(false);
     });
 
-    //cleanup function
     return () => {
       unsubscribe();
-      if (userDocUnsubscribe) {
-        userDocUnsubscribe();
-      }
+      if (userDocUnsubscribe) userDocUnsubscribe();
     };
-  }, []); //don't put user or login time in dependency, causes infinite loop.
+  }, []);
 
   return (
     <UserContext.Provider
       value={{ user, setUser, loading, loginTime, setLoginTime }}
     >
-      {/*the value prop is what will be passed to children from the context*/}
       {children}
     </UserContext.Provider>
   );

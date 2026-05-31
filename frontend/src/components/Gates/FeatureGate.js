@@ -1,5 +1,5 @@
 /**
- * @file FeatureGates.js
+ * @file FeatureGate.js
  * @author Paola Bustos, Simon Tenedero
  * @created 2025-06-18
  * @lastModified 2025-06-18

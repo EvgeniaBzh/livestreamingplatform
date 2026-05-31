@@ -10,6 +10,7 @@ services:
       - DB_PASSWORD=pwd
       - DB_NAME=livestream_db
       - YOUTUBE_API_KEY=${YOUTUBE_API_KEY}
+      - PYTHONUNBUFFERED=1
     env_file:
       - .env
     networks:
@@ -57,16 +58,17 @@ services:
   analysis:
     build:
       context: ./analysis
-    environment: #have to specify the environment variables
+    environment:
       - GENAI_API_KEY=${GENAI_API_KEY}
-    env_file: #has to specify the env file
+    env_file:
       - .env
     ports:
       - "5001:5001"
+      - "5002:5002"  # <--- ТЕПЕР ПОРТ ВІДКРИТО
     networks:
       - analysis-backend
     volumes:
-      - ./analysis:/app  # Mount the sentiment-service directory on the host to /app in the container
+      - ./analysis:/usr/src/app  # <--- ВІДПОВІДАЄ WORKDIR У DOCKERFILE
 
 networks:
   backend-frontend:

@@ -9,7 +9,7 @@
 import { NavLink } from 'react-router-dom';
 import { Bars3Icon } from '@heroicons/react/24/outline';
 import { Menu, MenuButton, MenuItem, MenuItems } from '@headlessui/react';
-import { FeatureGate } from '../gates/FeatureGate';
+import { FeatureGate } from '../Gates/FeatureGate';
 import { AVAILABLE_FEATURES } from '../../utils/roleUtils';
 
 /**

@@ -17,12 +17,10 @@ const container = document.getElementById('root');
 const root = createRoot(container);
 
 root.render(
-  <React.StrictMode>
-    <HashRouter>
-      {/*wrapping app in user provider to make User available to all components in app*/}
-      <UserProvider>
-        <App />
-      </UserProvider>
-    </HashRouter>
-  </React.StrictMode>
+  <HashRouter>
+    {/*wrapping app in user provider to make User available to all components in app*/}
+    <UserProvider>
+      <App />
+    </UserProvider>
+  </HashRouter>
 );

@@ -1,8 +1,5 @@
 /**
  * @file App.js
- * @author Paola Bustos, Jonas Matulis, Simon Tenedero
- * @created 2024-XX-XX
- * @lastModified 2025-07-07
  * @description Main application component that sets up the routing and state management for the K-Pop Livestream Platform. Also wraps the application in the FeatureProvider.
  */
 
@@ -16,6 +13,7 @@ import AdminPanel from './pages/AdminPanelPage';
 import SettingsPage from './pages/SettingsPage';
 import { FeatureProvider } from './context/FeatureContext';
 import AdminRoute from './routeguard/AdminRoute';
+import ArchivePage from './pages/ArchivePage';
 
 const App = () => {
   //declaring state variables
@@ -66,6 +64,7 @@ const App = () => {
               }
             />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/archive" element={<ArchivePage />} />
           </Routes>
         </div>
       </div>

@@ -1,4 +1,19 @@
-*/node_modules/
-/node_modules/
-/old_prototype/
-/.env/
+# dependencies
+node_modules/
+
+# analysis folder (all heavy data)
+analysis/
+
+# environment / secrets
+.env
+*.env
+
+# Google / Firebase / AWS keys
+serviceAccountKey.json
+*.json
+
+# logs
+*.log
+
+# system files
+.DS_Store

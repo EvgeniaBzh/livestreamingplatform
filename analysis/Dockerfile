@@ -1,34 +1,29 @@
 FROM python:3.11-slim-bullseye
 
-# Set working directory
 WORKDIR /usr/src/app
 
-# Install system dependencies in one layer
+# Встановлюємо системні залежності + ffmpeg для Whisper
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     gcc \
     g++ \
     python3-dev \
     build-essential \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    ffmpeg \
     ca-certificates \
-    apt-transport-https && \
-    apt-get clean && \
+    && apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Copy files
 COPY requirements.txt .
-
-# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Install additional dependency
 RUN pip install -q -U google-genai
 
-# Copy your application file
-COPY gemini.py .
+COPY . .
+RUN chmod +x start_all.sh
 
-# Expose the Flask port
 EXPOSE 5001
+EXPOSE 5002
 
-# Run the app
-CMD ["python3", "gemini.py"]
+CMD ["./start_all.sh"]

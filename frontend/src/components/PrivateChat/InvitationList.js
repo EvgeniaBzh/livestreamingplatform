@@ -49,8 +49,13 @@ const InvitationList = ({ invitations, onAcceptInvite, onRejectInvite }) => {
 
           // Fetch details about the user who sent the invitation
           const creator = await fetchUser(invitation.invitedBy);
+          
+          // --- DEBUG LOG: Check what the creator object contains ---
+          console.log(`[DEBUG: InvitationList] Creator data for invitation by ${invitation.invitedBy}:`, creator);
+
+          // Use username, then displayName, then email as fallback
           const creatorName = creator
-            ? creator.username || creator.displayName || 'Unknown User'
+            ? creator.username || creator.displayName || creator.email || 'Unknown User'
             : 'Unknown User';
 
           // Store all the details for this invitation

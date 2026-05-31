@@ -13,8 +13,8 @@ import PrivateChatSection from '../PrivateChat/PrivateChatSection';
 import {
   fetchPrivateChatVideoUrl,
   fetchPrivateChatMembers,
-  addUserToPrivateChat,
-} from '../../utils/privateChatUtils';
+  addUserToPrivateChat, // ВИПРАВЛЕНО: Імпортуємо правильну назву функції з правильного файлу
+} from '../../utils/privateChatUtils'; // ВИПРАВЛЕНО: шлях змінено з roleUtils на privateChatUtils
 import useActiveUsers from '../../hooks/useActiveUsers';
 import LiveChatContainer from '../YoutubeChat/LiveChatContainer';
 import ChatTabs from './ChatTabs';
@@ -24,7 +24,7 @@ import {
 } from '@heroicons/react/24/outline';
 import { useUser } from '../../context/UserContext';
 import { AVAILABLE_FEATURES } from '../../utils/roleUtils';
-import { FeatureGate } from '../gates/FeatureGate';
+import { FeatureGate } from '../Gates/FeatureGate';
 
 /**
  * SwitchableChat component for handling and displaying different chat types (Youtube, Native, PrivateTabs, PrivateChat)

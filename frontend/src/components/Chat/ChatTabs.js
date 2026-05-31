@@ -7,7 +7,7 @@
  */
 
 import './styles/ChatTabs.css';
-import { FeatureGate } from '../gates/FeatureGate';
+import { FeatureGate } from '../Gates/FeatureGate';
 
 /**
  * This component displays a list of chat tabs (youtube, native, private) - also used for the messages/invites

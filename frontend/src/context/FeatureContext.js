@@ -2,7 +2,7 @@
  * @file FeatureContext.js
  * @author Simon Tenedero, Paola Bustos
  * @created 2025-06-18
- * @lastModified 2025-06-18
+ * @lastModified 2025-11-26
  * @description Context for managing user roles and feature flags for A/B testing and modular UI
  */
 
@@ -33,26 +33,32 @@ export const useFeatureFlags = () => {
  */
 export const FeatureProvider = ({ children }) => {
   const [permissions, setPermissions] = useState({});
-  const [loading, setLoading] = useState(false);
-  const { user } = useUser(); // Single source of truth for user data
+  const [permissionsLoading, setPermissionsLoading] = useState(true); 
+  
+  // ВАЖЛИВО: Беремо loading з UserContext
+  // Це та сама логіка, яка "не викидає" вас. Ми чекаємо, поки UserContext скаже "Я все"
+  const { user, loading: userLoading } = useUser(); 
+
+  // Загальний статус завантаження: або вантажиться юзер, або вантажаться права
+  const isLoading = userLoading || permissionsLoading;
 
   /**
    * Fetch all user permissions once per user session
    */
   const fetchAllPermissions = async () => {
     try {
-      setLoading(true);
+      setPermissionsLoading(true);
       const userPermissions = await getMyOwnPermissions();
       setPermissions(userPermissions);
 
       console.log(
         `User permissions loaded: ${Object.keys(userPermissions).filter((key) => userPermissions[key])}`
-      ); //filter to a list of strings with valid permissions
+      ); 
     } catch (error) {
       console.error('Error fetching user permissions:', error);
       setPermissions({});
     } finally {
-      setLoading(false);
+      setPermissionsLoading(false);
     }
   };
 
@@ -64,13 +70,12 @@ export const FeatureProvider = ({ children }) => {
    * @returns {boolean} True if user has access to the feature
    */
   const hasFeature = (feature) => {
+    // Якщо ще йде завантаження - повертаємо false (але AdminRoute буде чекати через loading flag)
+    if (isLoading) return false;
+
     if (!user) {
       // Not logged in - only allow public features
       return feature === AVAILABLE_FEATURES.YOUTUBE_CHAT;
-    }
-
-    if (loading) {
-      return false;
     }
 
     return permissions[feature];
@@ -79,35 +84,50 @@ export const FeatureProvider = ({ children }) => {
   /**
    * Check if user has a specific role (uses UserContext as source of truth)
    */
-  const hasRole = (role) => {
-    return user?.role === role; //note we aren't doing role.roleName because this user object is from the context - this is not the firebase document
+  const hasRole = (roleToCheck) => {
+    if (isLoading) return false;
+    // ВИПРАВЛЕННЯ: Перевіряємо ID ролі з об'єкта
+    const userRoleId = user?.role?.roleId || user?.role; 
+    return userRoleId === roleToCheck; 
   };
 
   /**
    * Get user's current role from UserContext
    */
   const getUserRole = () => {
-    return user?.role;
+    return user?.role?.roleId || user?.role;
   };
 
   /**
    * Check if user has admin privileges (client-side check for UX)
    */
   const isAdmin = () => {
-    return hasRole('admin') && hasFeature(AVAILABLE_FEATURES.ADMIN_PANEL);
+    if (isLoading) return false; // Поки вантажиться - не пускаємо, але і не викидаємо (бо loading=true)
+    
+    // Перевіряємо роль Admin або ваш старий ID
+    const hasAdminRole = hasRole('admin') || hasRole('isXI4WLotri8r7v3SFa6') || user?.role?.roleName === 'Admin';
+    
+    // Для надійності перевіряємо і роль, і фічу доступу до панелі
+    return hasAdminRole && (permissions[AVAILABLE_FEATURES.ADMIN_PANEL] === true);
   };
 
   // Fetch permissions when user changes
   useEffect(() => {
-    console.log('fetching new set of permissions. user changed');
+    // Якщо юзер ще вантажиться - нічого не робимо, чекаємо
+    if (userLoading) {
+        return; 
+    }
+
+    console.log('User state settled. User:', user ? 'Found' : 'Not found');
+
     if (user) {
       fetchAllPermissions();
     } else {
       // User not logged in - clear permissions
       setPermissions({});
-      setLoading(false);
+      setPermissionsLoading(false);
     }
-  }, [user]);
+  }, [user, userLoading]);
 
   const value = {
     // Core functions (client-side checks for UX only)
@@ -118,8 +138,9 @@ export const FeatureProvider = ({ children }) => {
     fetchAllPermissions,
 
     // State
-    loading,
+    loading: isLoading, // Передаємо комбінований статус завантаження
     permissions, // Available for debugging/advanced use
+    userRole: getUserRole(),
 
     // Constants for easy access
     FEATURES: AVAILABLE_FEATURES,

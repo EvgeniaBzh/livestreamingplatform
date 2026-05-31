@@ -8,9 +8,9 @@
 
 import React, { useState } from 'react';
 import {
-  updateRole,
+  updateRoleCloud, // ВИПРАВЛЕНО: updateRole -> updateRoleCloud
   AVAILABLE_FEATURES,
-  deleteRole,
+  deleteRoleCloud, // ВИПРАВЛЕНО: deleteRole -> deleteRoleCloud
 } from '../../utils/roleUtils.js';
 
 /**
@@ -142,7 +142,7 @@ const UpdateGroupModal = ({ isOpen, onClose, onGroupCreated, groupData }) => {
 
     setLoading(true);
     try {
-      await deleteRole(groupData.id);
+      await deleteRoleCloud(groupData.id); // ВИПРАВЛЕНО: deleteRole -> deleteRoleCloud
 
       onClose();
 
@@ -173,7 +173,7 @@ const UpdateGroupModal = ({ isOpen, onClose, onGroupCreated, groupData }) => {
     try {
       console.log('formData=', formData);
 
-      await updateRole(groupData.id, formData);
+      await updateRoleCloud(groupData.id, formData); // ВИПРАВЛЕНО: updateRole -> updateRoleCloud
 
       // Call success callback
       onGroupCreated && onGroupCreated();

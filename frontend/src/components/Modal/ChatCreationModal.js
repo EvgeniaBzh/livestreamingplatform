@@ -2,7 +2,7 @@
  * @file ChatCreationModal.js
  * @author Simon Tenedero, Jonas Matulis
  * @created 2024-XX-XX
- * @lastModified 2025-05-27
+ * @lastModified 2025-06-11
  * @description file containing ChatCreationModal component
  */
 
@@ -38,19 +38,42 @@ const ChatCreationModal = ({
   const [chatUrl, setChatUrl] = useState(''); // State variable for the live URL
   const [invitedUsers, setInvitedUsers] = useState([]); // State variable for the list of invited users
   const [users, setUsers] = useState([]); // State variable for the list of users
+  const [isLoading, setIsLoading] = useState(true); // State variable for loading state
 
   // Fetch users from the database when the component mounts
   useEffect(() => {
     const loadUsers = async () => {
-      const users = await fetchUsers();
-      setUsers(users);
+      try {
+        setIsLoading(true);
+        const fetchedUsers = await fetchUsers();
+        console.log('[DEBUG: ChatCreationModal] Fetched users:', fetchedUsers);
+        
+        // Filter out current user from the list
+        const filteredUsers = fetchedUsers.filter(
+          (user) => user.uid !== currentUser?.uid
+        );
+        
+        setUsers(filteredUsers);
+      } catch (error) {
+        console.error('[ERROR: ChatCreationModal] Failed to fetch users:', error);
+      } finally {
+        setIsLoading(false);
+      }
     };
-    loadUsers();
-  }, []);
+    
+    if (currentUser) {
+      loadUsers();
+    }
+  }, [currentUser]);
+
+  // Helper function to get user display name with fallback logic
+  const getUserDisplayName = (user) => {
+    return user.username || user.displayName || user.email || 'Unknown User';
+  };
 
   // Function to add a user to list of invited users
   const handleUserSelect = (user) => {
-    if (user.uid !== currentUser.uid) {
+    if (user.uid !== currentUser.uid && !invitedUsers.some((u) => u.uid === user.uid)) {
       setInvitedUsers((prev) => [...prev, user]);
     }
   };
@@ -62,6 +85,22 @@ const ChatCreationModal = ({
 
   // Function to create the chat with the specified settings
   const handleCreateChat = async () => {
+    // Validation
+    if (!chatName.trim()) {
+      alert('Please enter a chat name');
+      return;
+    }
+
+    if (!chatUrl.trim()) {
+      alert('Please enter a YouTube URL');
+      return;
+    }
+
+    if (invitedUsers.length === 0) {
+      alert('Please invite at least one user');
+      return;
+    }
+
     const chatSettings = {
       name: chatName,
       url: chatUrl,
@@ -73,6 +112,7 @@ const ChatCreationModal = ({
       onClose(); // Close the menu after creating the chat
     } catch (error) {
       console.error('Failed to create chat:', error);
+      alert('Failed to create chat. Please try again.');
     }
   };
 
@@ -98,7 +138,7 @@ const ChatCreationModal = ({
 
       {currentUser && (
         <div className="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center z-[1005]">
-          <div className="bg-secondary p-6 rounded-lg">
+          <div className="bg-secondary p-6 rounded-lg max-w-md w-full">
             <h2 className="text-lg font-bold mb-4">Create Private Chat</h2>
 
             <input
@@ -106,51 +146,92 @@ const ChatCreationModal = ({
               placeholder="Chat Name"
               value={chatName}
               onChange={(e) => setChatName(e.target.value)}
-              className="mb-4 p-2 border rounded w-full"
+              className="mb-4 p-2 border rounded w-full text-black"
             />
 
             <input
               type="text"
-              placeholder="Live URL"
+              placeholder="Live URL (YouTube)"
               value={chatUrl}
               onChange={(e) => setChatUrl(e.target.value)}
-              className="mb-4 p-2 border rounded w-full"
+              className="mb-4 p-2 border rounded w-full text-black"
             />
+            
             <h3 className="font-semibold mb-2">Invite Users</h3>
 
-            <div className="mb-4 max-h-40 overflow-y-auto">
-              {users.map((user) => (
-                <div
-                  key={user.uid}
-                  className="flex items-center justify-between"
-                >
-                  <span>{user.username}</span>
-                  {invitedUsers.some((u) => u.uid === user.uid) ? (
-                    <button
-                      onClick={() => handleUserRemove(user)}
-                      className="text-primary"
-                    >
-                      Remove
-                    </button>
-                  ) : (
-                    <button onClick={() => handleUserSelect(user)} className="">
-                      Invite
-                    </button>
-                  )}
+            {/* Show invited users count */}
+            {invitedUsers.length > 0 && (
+              <div className="mb-2 text-sm text-gray-400">
+                {invitedUsers.length} user{invitedUsers.length !== 1 ? 's' : ''} invited
+              </div>
+            )}
+
+            <div className="mb-4 max-h-40 overflow-y-auto border rounded p-2">
+              {isLoading ? (
+                <div className="text-center text-gray-400 py-4">
+                  Loading users...
                 </div>
-              ))}
+              ) : users.length === 0 ? (
+                <div className="text-center text-gray-400 py-4">
+                  No other users available
+                </div>
+              ) : (
+                users.map((user) => {
+                  const isInvited = invitedUsers.some((u) => u.uid === user.uid);
+                  const displayName = getUserDisplayName(user);
+                  
+                  return (
+                    <div
+                      key={user.uid}
+                      className="flex items-center justify-between py-2 border-b border-gray-600 last:border-b-0"
+                    >
+                      <div className="flex items-center space-x-2">
+                        {/* Avatar or initial */}
+                        {user.photoURL ? (
+                          <img
+                            src={user.photoURL}
+                            alt={displayName}
+                            className="w-8 h-8 rounded-full"
+                          />
+                        ) : (
+                          <div className="w-8 h-8 rounded-full bg-accent flex items-center justify-center text-black font-bold">
+                            {displayName.charAt(0).toUpperCase()}
+                          </div>
+                        )}
+                        <span className="text-white">{displayName}</span>
+                      </div>
+                      
+                      {isInvited ? (
+                        <button
+                          onClick={() => handleUserRemove(user)}
+                          className="text-red-400 hover:text-red-300 text-sm"
+                        >
+                          Remove
+                        </button>
+                      ) : (
+                        <button 
+                          onClick={() => handleUserSelect(user)} 
+                          className="text-accent hover:text-white text-sm"
+                        >
+                          Invite
+                        </button>
+                      )}
+                    </div>
+                  );
+                })
+              )}
             </div>
 
             <div className="flex justify-end space-x-2">
               <button
                 onClick={onClose}
-                className="btn btn-neutral px-4 py-2 btn-sm"
+                className="bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded"
               >
                 Cancel
               </button>
               <button
                 onClick={handleCreateChat}
-                className="btn btn-primary px-4 py-2 btn-sm"
+                className="bg-accent hover:bg-white hover:text-black text-black px-4 py-2 rounded"
               >
                 Create
               </button>

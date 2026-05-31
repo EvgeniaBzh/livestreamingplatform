@@ -1,9 +1,7 @@
 /**
- * @file roleUtils.js
- * @author Simon Tenedero, Jonas Matulis
- * @created 2024-XX-XX
- * @lastModified 2025-06-04
- * @desc module for managing private chat
+ * @file privateChatUtils.js
+ * @author Simon Tenedero, Jonas Matulis, Yevheniia Bazhmaieva
+ * @description Module for managing private chats (Fixed Defaults)
  */
 
 import {
@@ -17,232 +15,288 @@ import {
   getDoc,
   updateDoc,
   getDocs,
-  increment,
   deleteDoc,
+  arrayUnion,
+  arrayRemove,
+  setDoc,
+  increment
 } from 'firebase/firestore';
-
-import { db } from '../firebaseConfig';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { db, storage } from '../firebaseConfig';
 import { fetchYoutubeVideoNameFromUrl } from './livestreamsUtils';
+import { fetchPublicUserInfo, logWebsiteUsage, getContentType } from './usersUtils';
+import { getAuth } from 'firebase/auth';
 
-/**
- * allows user to leave private chat
- *
- * @param {object} user - user leaving chat
- * @param {string} privateChatId - the ID of the private chat
- *
- * @returns {Promise<void>} - a promise that resolves when the user has left the chat
- */
-export const leavePrivateChat = async (user, privateChatId) => {
-  console.log(typeof user);
+// ==========================================
+// FETCH & LISTENERS
+// ==========================================
 
-  const chatRef = doc(db, 'privateChats', privateChatId);
-  const chatSnap = await getDoc(chatRef);
+export const fetchChats = (
+  user, 
+  setPrivateChats, 
+  // --- ДОДАНО ЗНАЧЕННЯ ЗА ЗАМОВЧУВАННЯМ, ЩОБ ВИПРАВИТИ ПОМИЛКУ ---
+  setSelectedPrivateChat = () => {}, 
+  setPrivateChatMembers = () => {}, 
+  setSelectedPrivateChatMembers = () => {}, 
+  setPendingPrivateChatMembers = () => {}, 
+  setSelectedPrivateChatPendingMembers = () => {}, 
+  chatCacheRef = { current: new Map() }, // Виправляє "reading 'current' of undefined"
+  selectedPrivateChatRef = { current: null }, 
+  setLoadingChatSettings = () => {} 
+  // ---------------------------------------------------------------
+) => {
+  try {
+    console.log("Setting up chat listener for user", user.uid);
+    const privateChatsQuery = query(collection(db, "users", user.uid, "privateChats"));
 
-  console.log('snap=', chatSnap);
+    const unsubscribe = onSnapshot(privateChatsQuery, async (snapshot) => {
+        setLoadingChatSettings(true);
+        
+        // Використовуємо переданий ref або створюємо новий, якщо його немає
+        let chatCache = chatCacheRef.current || new Map();
+        let selectedChat = selectedPrivateChatRef.current;
 
-  if (!chatSnap.exists()) {
-    console.error('Chat document does not exist.');
-    return;
-  }
+        if (snapshot.empty) {
+          chatCache.clear();
+          setPrivateChats([]);
+          setSelectedPrivateChat(null);
+          setPrivateChatMembers(new Map());
+          setLoadingChatSettings(false);
+          return;
+        }
 
-  const chatData = chatSnap.data();
-
-  if (chatData.owner === user.uid) {
-    //no members, to make new owner so delete chat
-    if (!chatData.members || chatData.members.length === 0) {
-      //cancel invitations that are pending
-      const invitationsRef = collection(
-        db,
-        'privateChats',
-        privateChatId,
-        'invitations'
-      );
-      const invitationsSnap = await getDocs(invitationsRef);
-
-      const invitationsData = invitationsSnap.docs.map((doc) => doc.data());
-
-      console.log(invitationsData[0]);
-
-      //filter invitations by pending status, then set their status to cancelled in the user document
-      await Promise.all(
-        invitationsData
-          .filter(({ status }) => status === 'pending')
-          .map(({ user }) => handleCancelInvitation(privateChatId, user))
-      );
-
-      //archive chat in deletePrivateChats collection
-      const deletedRef = await addDoc(collection(db, 'deletedPrivateChats'), {
-        ...chatData,
-        originalChatId: chatSnap.id, //save original uid
-        deletedAt: new Date(),
-      });
-
-      //add invitations to archive
-      const deleteRefInvitations = collection(deletedRef, 'invitations');
-      await Promise.all(
-        invitationsData.map(({ user, status }) => {
-          addDoc(deleteRefInvitations, {
-            user,
-            status: status === 'pending' ? 'chatDeleted' : status,
+        const currentChatRefs = new Map();
+        snapshot.docs.forEach((doc) => {
+          const data = doc.data();
+          currentChatRefs.set(doc.id, {
+            settingsLastUpdated: data.settingsLastUpdated?.toDate() || new Date(),
+            membersLastUpdated: data.membersLastUpdated?.toDate() || new Date(),
+            pendingMembersLastUpdated: data.pendingMembersLastUpdated?.toDate() || new Date(),
           });
-          return ''; //map expects function with a return value
-        })
-      );
+        });
 
-      //delete original invitations
-      const deleteInvitations = invitationsSnap.docs.map((doc) =>
-        deleteDoc(doc.ref)
-      );
-      await Promise.all(deleteInvitations);
+        const chatsToFetch = [];
+        const membersToFetch = [];
+        const pendingToFetch = [];
 
-      //delete original chat
-      await deleteDoc(chatRef);
-    }
-    //members exist, so make one of them the new owner
-    else {
-      const oldOwner = chatData.owner;
-      const updatedMembers = [...chatData.members];
-      const newOwner = updatedMembers.pop();
-      const updatedPreviousMembers = [...chatData.previousMembers, oldOwner];
-      await updateDoc(chatRef, {
-        owner: newOwner,
-        members: updatedMembers,
-        previousMembers: updatedPreviousMembers,
-      });
-    }
-  } else if (chatData.members.includes(user.uid)) {
-    //if not owner, just move from members to previous members
-    const updatedMembers = chatData.members.filter((uid) => uid !== user.uid);
-    const updatedPreviousMembers = [...chatData.previousMembers, user.uid];
-    await updateDoc(chatRef, {
-      members: updatedMembers,
-      previousMembers: updatedPreviousMembers,
+        for (const [chatId, updates] of currentChatRefs) {
+          const cached = chatCache.get(chatId);
+          if (!cached || updates.settingsLastUpdated > cached.settingsLastUpdated) chatsToFetch.push(chatId);
+          if (!cached || updates.membersLastUpdated > cached.membersLastUpdated) membersToFetch.push(chatId);
+          if (!cached || updates.pendingMembersLastUpdated > cached.pendingMembersLastUpdated) pendingToFetch.push(chatId);
+        }
+
+        const currentChatIds = new Set(currentChatRefs.keys());
+        for (const key of chatCache.keys()) {
+            if (!currentChatIds.has(key)) chatCache.delete(key);
+        }
+
+        if (chatsToFetch.length > 0) {
+            const snaps = await Promise.all(chatsToFetch.map(id => getDoc(doc(db, "privateChats", id))));
+            snaps.forEach(snap => {
+                if(snap.exists()) {
+                    const cache = chatCache.get(snap.id) || {};
+                    chatCache.set(snap.id, { ...cache, chatData: { id: snap.id, ...snap.data() }, settingsLastUpdated: currentChatRefs.get(snap.id).settingsLastUpdated });
+                }
+            });
+        }
+
+        if (membersToFetch.length > 0) {
+            for(const id of membersToFetch) {
+                const memSnaps = await getDocs(collection(db, "privateChats", id, "members"));
+                const members = memSnaps.docs.map(d => ({ uid: d.id, ...d.data() }));
+                const cache = chatCache.get(id) || {};
+                chatCache.set(id, { ...cache, memberData: members, membersLastUpdated: currentChatRefs.get(id).membersLastUpdated });
+            }
+        }
+
+        if (pendingToFetch.length > 0) {
+            for(const id of pendingToFetch) {
+                const q = query(collection(db, "privateChats", id, "invitations"), where("status", "==", "pending"));
+                const invSnaps = await getDocs(q);
+                const pendingIds = invSnaps.docs.map(d => d.data().userId);
+                
+                const pendingData = await Promise.all(pendingIds.map(async uid => {
+                    const uSnap = await getDoc(doc(db, "publicUserInfo", uid));
+                    return uSnap.exists() ? { uid, ...uSnap.data(), membershipStatus: "pending" } : null;
+                }));
+                
+                const cache = chatCache.get(id) || {};
+                chatCache.set(id, { ...cache, pendingMemberData: pendingData.filter(p => p), pendingMembersLastUpdated: currentChatRefs.get(id).pendingMembersLastUpdated });
+            }
+        }
+
+        const allChats = Array.from(currentChatRefs.keys()).map(id => chatCache.get(id)?.chatData).filter(c => c);
+        setPrivateChats(allChats);
+
+        const allMembers = new Map();
+        const allPending = new Map();
+        currentChatRefs.forEach((_, id) => {
+            if(chatCache.get(id)?.memberData) allMembers.set(id, chatCache.get(id).memberData);
+            if(chatCache.get(id)?.pendingMemberData) allPending.set(id, chatCache.get(id).pendingMemberData);
+        });
+        
+        setPrivateChatMembers(allMembers);
+        if (setPendingPrivateChatMembers) setPendingPrivateChatMembers(allPending);
+
+        if (selectedChat && currentChatRefs.has(selectedChat.id)) {
+            const cached = chatCache.get(selectedChat.id);
+            if (cached) {
+              if (cached.chatData && setSelectedPrivateChat) setSelectedPrivateChat({ id: selectedChat.id, ...cached.chatData });
+              if (cached.memberData && setSelectedPrivateChatMembers) setSelectedPrivateChatMembers(cached.memberData);
+              if (cached.pendingMemberData && setSelectedPrivateChatPendingMembers) setSelectedPrivateChatPendingMembers(cached.pendingMemberData);
+            }
+        } else if (setSelectedPrivateChat) {
+            setSelectedPrivateChat(null);
+            if (setSelectedPrivateChatMembers) setSelectedPrivateChatMembers([]);
+        }
+        
+        setLoadingChatSettings(false);
     });
-  } else {
-    console.log('user is not an owner or member of chat');
+
+    return () => unsubscribe();
+  } catch (error) {
+    console.error("Error setting up chat listener:", error);
+    return () => {};
   }
 };
 
-/**
- * Fetches messages from a private chat and sets them in the state. (The result is stored in the messages state variable)
- *
- * @param {string} privateChatId - the ID of the private chat
- * @param {Function} setMessages - a function to set the messages in the state
- *
- * @returns {Function} - a function to unsubscribe from the messages updates
- */
+export const fetchPrivateChatName = async (chatId) => {
+  try {
+    const snap = await getDoc(doc(db, "privateChats", chatId));
+    return snap.exists() ? (snap.data().name || "Unnamed Chat") : "Unnamed Chat";
+  } catch (e) { return "Unnamed Chat"; }
+};
+
+export const fetchPrivateChatVideoTitle = (chatId, setVideoTitle) => {
+  const chatRef = doc(db, 'privateChats', chatId);
+  return onSnapshot(chatRef, (doc) => {
+    if (doc.exists()) {
+      setVideoTitle(doc.data().videoTitle || 'No video');
+    } else {
+      setVideoTitle('');
+    }
+  });
+};
+
+export const fetchPrivateChatVideoId = async (chatId) => {
+  try {
+    const snap = await getDoc(doc(db, "privateChats", chatId));
+    if (snap.exists() && snap.data().url) {
+        const url = new URL(snap.data().url);
+        return url.searchParams.get("v");
+    }
+    return null;
+  } catch (e) { return null; }
+};
+
+export const fetchPrivateChatVideoUrl = async (chatId) => {
+  try {
+    const s = await getDoc(doc(db, "privateChats", chatId));
+    return s.exists() ? s.data().url || "" : "";
+  } catch (e) { return ""; }
+};
+
 export const fetchPrivateChatMessages = (privateChatId, setMessages) => {
   const q = query(
     collection(db, 'privateChats', privateChatId, 'messages'),
     orderBy('timestamp', 'asc')
   );
 
-  //onSnapshot will detect if there are any changes in documents matching the query - and run the argument function
-  const unsubscribe = onSnapshot(q, async (snapshot) => {
-    //snapshot is the set of documents matching the query
+  return onSnapshot(q, async (snapshot) => {
     const messagesData = await Promise.all(
       snapshot.docs.map(async (docSnapshot) => {
-        //docSnapshot is a single document in the snapshot - i.e. one message
         const message = docSnapshot.data();
-        //if message has an author, we want to retun an object that has both the message and author data
         if (message.authorUid) {
-          const userRef = doc(db, 'users', message.authorUid);
-          const userSnap = await getDoc(userRef); //get author of message from database
-          if (userSnap.exists()) {
-            const userData = userSnap.data();
-            //object containing message fields, and either their website pfp or google pfp (whichever is true first) as well as the userData
-            return {
-              ...message,
-              authorPhotoURL: userData.photoURL || userData.profilePicture,
-              userInfo: userData,
-            };
-          }
+            const userData = await fetchPublicUserInfo(message.authorUid);
+            if (userData) {
+                return {
+                    ...message,
+                    messageId: docSnapshot.id,
+                    authorPhoto: userData.profilePicture,
+                    authorName: userData.username || userData.displayName,
+                    userInfo: userData
+                };
+            }
+            const userRef = doc(db, 'users', message.authorUid);
+            const userSnap = await getDoc(userRef);
+            if (userSnap.exists()) {
+                const u = userSnap.data();
+                return {
+                ...message,
+                messageId: docSnapshot.id,
+                authorPhoto: u.photoURL || u.profilePicture,
+                userInfo: u,
+                };
+            }
         }
-        //otherwise, no author - just return message
-        return message;
+        return { ...message, messageId: docSnapshot.id };
       })
     );
-
-    //update messages of private chat
     setMessages(messagesData);
   });
-
-  //return function to detect changes in the private chat (will remap all the messages if one is added or removed)
-  return unsubscribe;
 };
 
-/**
- * Sends a message to a private chat.
- * If the input is not empty, the private chat ID exists, and the user is authenticated, the message is sent.
- * The message is added to the private chat's messages collection.
- *
- * @param {string} privateChatId - the ID of the private chat
- * @param {Object} user - the authenticated user object
- * @param {string} input - the message to send
- * @param {Function} setInput - a function to set the input state to an empty string after sending the message
- *
- * @returns {Promise<void>} - a promise that resolves when the message is sent
- */
-export const sendPrivateChatMessage = async (
-  privateChatId,
-  user,
-  input,
-  setInput
-) => {
-  if (input.trim() && privateChatId && user) {
-    const messageData = {
-      text: input,
-      authorName: user.displayName,
-      authorUid: user.uid,
-      timestamp: new Date().toISOString(),
-    };
-    await addDoc(
-      collection(db, 'privateChats', privateChatId, 'messages'),
-      messageData
-    );
-    setInput('');
+// Виправлена функція fetchPrivateChatMembers (вже була вище, але дублюю тут)
+export const fetchPrivateChatMembers = async (chatId) => {
+  try {
+    const membersRef = collection(db, "privateChats", chatId, "members");
+    const membersSnap = await getDocs(membersRef);
+    
+    if (!membersSnap.empty) {
+        const membersData = await Promise.all(
+          membersSnap.docs.map(async (docSnap) => {
+            const data = docSnap.data();
+            const uid = docSnap.id;
+            
+            try {
+              const publicInfo = await fetchPublicUserInfo(uid);
+              if (publicInfo) {
+                return [
+                  {
+                    uid,
+                    username: publicInfo.username || publicInfo.displayName || data.username,
+                    profilePicture: publicInfo.profilePicture || data.profilePicture,
+                    photoURL: publicInfo.profilePicture || data.profilePicture,
+                    displayName: publicInfo.displayName || publicInfo.username || data.username,
+                    bio: publicInfo.bio || data.bio || "No bio available."
+                  },
+                  data.membershipStatus || 'member'
+                ];
+              }
+            } catch (err) {
+              console.warn("Could not fetch public info for user:", uid, err);
+            }
+            
+            return [
+              { 
+                uid, 
+                username: data.username || data.displayName || "User", 
+                profilePicture: data.profilePicture || data.photoURL || "",
+                photoURL: data.profilePicture || data.photoURL || "",
+                displayName: data.username || data.displayName || "User",
+                bio: data.bio || "No bio available."
+              }, 
+              data.membershipStatus || 'member'
+            ];
+          })
+        );
+        
+        return membersData;
+    }
+    return [];
+  } catch (e) {
+      console.error("Error fetching chat members:", e);
+      return [];
   }
 };
 
-/**
- * Deletes a private message from a private chat. Moves to the deletedMessages collection of the private chat.
- *
- * @param {string} privateChatId - the ID of the private chat
- * @param {string} text - the text of the message to delete
- * @param {string} timestamp - the timestamp of the message to delete
- *
- * @returns {Promise<void>} - a promise that resolves when the message is deleted
- */
-export const deletePrivateChatMessage = async (
-  privateChatId,
-  text,
-  timestamp
-) => {
-  const q = query(
-    collection(db, 'privateChats', privateChatId, 'messages'),
-    orderBy('timestamp', 'asc')
-  );
-  const snapshot = await getDocs(q);
-  snapshot.forEach(async (doc) => {
-    const message = doc.data();
-    if (message.text === text && message.timestamp === timestamp) {
-      await deleteDoc(doc.ref);
-      await addDoc(collection(db, 'deletedMessages'), {
-        ...message,
-        chatId: privateChatId,
-      });
-    }
-  });
+export const fetchPendingInvitations = async (chatId) => {
+    const q = query(collection(db, "privateChats", chatId, "invitations"), where("status", "==", "pending"));
+    const s = await getDocs(q);
+    return s.docs.map(d => d.data());
 };
 
-/**
- * Fetches the active users from the Firestore database and sets them in the state.
- * The active users are users who are currently online.
- *
- * @param {Function} setActiveUsers - a function to set the active users in the state
- *
- * @returns {Promise<void>} - a promise that resolves when the active users are fetched
- */
 export const fetchActiveUsers = async (setActiveUsers) => {
   const usersSnapshot = await getDocs(collection(db, 'users'));
   const users = usersSnapshot.docs.map((doc) => ({
@@ -252,467 +306,232 @@ export const fetchActiveUsers = async (setActiveUsers) => {
   setActiveUsers(users);
 };
 
-export const handleAcceptInvitation = async (
-  invitationId,
-  chatId,
-  user,
-  setPrivateChats
-) => {
-  console.log('handleac call');
+// --- ACTIONS ---
 
-  const invitationRef = doc(db, 'users', user.uid, 'invitations', invitationId);
-  const invitationSnap = await getDoc(invitationRef);
-  if (invitationSnap.exists()) {
-    await updateDoc(invitationRef, { status: 'accepted' });
-    setPrivateChats((prev) => [...prev, chatId]); //prev is the current value of the state (in this case selectedChat) to be updated - we add the chatId of the chat that was accepted
-
-    //update invitation in the privateChat document collection too
-    const q = query(
-      collection(db, 'privateChats', chatId, 'invitations'),
-      where('user', '==', user.uid)
-    );
-    const querySnapshot = await getDocs(q);
-    if (!querySnapshot.empty) {
-      const invite = querySnapshot.docs[0];
-      await updateDoc(invite.ref, { status: 'accepted' });
-    }
-
-    //updating private chat document
-    const chatRef = doc(db, 'privateChats', chatId);
-    const chatSnap = await getDoc(chatRef);
-    const currentMembers = chatSnap.data().members;
-
-    if (!currentMembers.includes(user.uid)) {
-      currentMembers.push(user.uid);
-    }
-    await updateDoc(chatRef, { members: currentMembers });
-
-    console.log('current members =', currentMembers);
-  } else {
-    console.error('Invitation document does not exist.');
-  }
-};
-
-/**
- * Rejects an invitation to a private chat.
- * The status of the invitation is set to 'rejected'.
- * The invitation is not deleted from the database.
- *
- * @param {string} invitationId - the ID of the invitation
- * @param {string} chatId - the ID of the private chat
- * @param {Object} user - the authenticated user
- *
- * @returns {Promise<void>} - a promise that resolves when the invitation is rejected
- */
-export const handleRejectInvitation = async (invitationId, chatId, user) => {
-  const invitationRef = doc(db, 'users', user.uid, 'invitations', invitationId);
-  const invitationSnap = await getDoc(invitationRef);
-  if (invitationSnap.exists()) {
-    await updateDoc(invitationRef, { status: 'rejected' });
-
-    const q = query(
-      collection(db, 'privateChats', chatId, 'invitations'),
-      where('user', '==', user.uid)
-    );
-    const querySnapshot = await getDocs(q);
-    if (!querySnapshot.empty) {
-      const invite = querySnapshot.docs[0];
-      await updateDoc(invite.ref, { status: 'rejected' });
-    }
-  } else {
-    console.error('Invitation document does not exist.');
-  }
-};
-
-/**
- * Cancels an invitation to a private chat if chat is deleted before a response is received
- * The status of the invitation is set to 'chatDeleted'.
- * The invitation is not deleted from the database.
- *
- * @param {string} chatId - the ID of the private chat
- * @param {string} userID - the ID of the user whose invitation is being cancelled
- *
- * @returns {Promise<void>} - a promise that resolves when the invitation is cancelled
- */
-export const handleCancelInvitation = async (chatId, userID) => {
-  const q = query(
-    collection(db, 'users', userID, 'invitations'),
-    where('chatId', '==', chatId)
-  );
-  const invitationSnap = await getDocs(q);
-
-  if (!invitationSnap.empty) {
-    await updateDoc(invitationSnap.docs[0].ref, { status: 'chatDeleted' });
-
-    //when we call handleCancelInvitation in leaveChat, we handle updating the private chat invitation collection there
-  } else {
-    console.error('Invitation document does not exist.');
-  }
-};
-
-/**
- * Create a new chat with the given chat settings
- * The chat is added to the privateChats collection.
- * Invitations are sent to the invited users.
- * The invitations are added to the users' invitations collection.
- * The private chat document has its own collection of invitations, which records the user ID and status of the invitation.
- *
- * @param {*} chatId, user
- *
- * @param {Object} chatSettings - the settings for the new chat
- * @param {string} chatSettings.name - the name of the chat
- * @param {string} chatSettings.url - the URL of the YouTube video to be associated with the chat
- * @param {Array} chatSettings.invitedUsers - an array of user objects to be invited to the chat
- * @param {Object} user - the authenticated user creating the chat
- * @param {string} user.uid - the UID of the authenticated user
- * @param {string} user.displayName - the display name of the authenticated user
- * @param {string} user.photoURL - the photo URL of the authenticated user
- * @param {string} user.email - the email of the authenticated user
- *
- * @returns {Promise<void>} - a promise that resolves when the chat is created and invitations are sent
- */
 export const createChat = async (chatSettings, user) => {
-  console.log('in createchat()');
+  console.log('createChat', chatSettings);
+  const currentTime = new Date();
 
-  console.log(chatSettings);
-
-  const chatData = {
-    name: chatSettings.name,
-    creator: user.uid,
-    owner: user.uid, //owner doesn't always equal creator, if creator leaves chat owner is chosen from remaining members in chat
-    members: [],
-    previousMembers: [],
-    url: chatSettings.url,
-    videoTitle: await fetchYoutubeVideoNameFromUrl(chatSettings.url),
-    createdAt: new Date().toISOString(),
-  };
-
-  const chatRef = await addDoc(collection(db, 'privateChats'), chatData); //chat will exist in privateChats collection if request to create is made - regardless of whether invitation is accepted
-
-  //create collection with invitations, recording uid and invitation status
-  await Promise.all(
-    chatSettings.invitedUsers.map((u) =>
-      addDoc(collection(db, 'privateChats', chatRef.id, 'invitations'), {
-        user: u.uid,
-        status: 'pending',
-      })
-    )
-  );
-
-  //send invitations to each user
-  chatSettings.invitedUsers.forEach(async (invitedUser) => {
-    const invitationData = {
-      chatId: chatRef.id,
-      invitedBy: user.uid,
-      invitedAt: new Date().toISOString(),
-      status: 'pending',
+  try {
+    const chatData = {
+      name: chatSettings.name,
+      creator: user.uid,
+      owner: user.uid, // ВИПРАВЛЕННЯ: Додаємо owner
+      url: chatSettings.url,
+      icon: null, 
+      videoTitle: await fetchYoutubeVideoNameFromUrl(chatSettings.url),
+      createdAt: currentTime.toISOString(),
     };
-    await addDoc(
-      collection(db, 'users', invitedUser.uid, 'invitations'),
-      invitationData
+
+    const chatRef = await addDoc(collection(db, 'privateChats'), chatData);
+
+    let chatIcon = null;
+    if (chatSettings.icon) {
+      chatIcon = await uploadChatIcon(chatRef.id, chatSettings.icon);
+      await updateDoc(chatRef, { icon: chatIcon });
+    }
+
+    const ownerInvRef = await addDoc(
+      collection(db, 'users', user.uid, 'invitations'),
+      {
+        chatId: chatRef.id,
+        chatName: chatSettings.name,
+        chatIcon: chatIcon,
+        invitedBy: user.uid,
+        invitedAt: currentTime.toISOString(),
+        status: 'accepted',
+        chatStatus: 'active',
+        acceptedAt: currentTime.toISOString(),
+      },
     );
-  });
-};
-
-/***
- * Simulates an invitation to a private chat *for testing*.
- *
- * @param {Object} user - the authenticated user
- *
- * @returns {Promise<void>} - a promise that resolves when the invitation is simulated
- */
-export const simulateInvite = async (user) => {
-  const chatId = 'testChatId';
-  const invitationData = {
-    chatId,
-    invitedBy: 'testUser2',
-    invitedAt: new Date().toISOString(),
-    status: 'pending',
-  };
-  await addDoc(
-    collection(db, 'users', user.uid, 'invitations'),
-    invitationData
-  );
-};
-
-/**
- * Fetches the name of a private chat from the Firestore database.
- * If the chat document exists, the name is returned.
- *
- * @param {string} chatId - the ID of the private chat
- *
- * @returns {Promise<string>} - a promise that resolves to the name of the private chat
- */
-export const fetchPrivateChatName = async (chatId) => {
-  const chatRef = doc(db, 'privateChats', chatId);
-  const chatSnap = await getDoc(chatRef);
-  if (chatSnap.exists()) {
-    return chatSnap.data().name || chatSnap.data().url || 'Unnamed Chat';
-  } else {
-    console.error('Chat document does not exist.');
-    return 'Unnamed Chat';
-  }
-};
-
-/**
- * Fetches the title of the YouTube video from the Firestore database.
- * If the chat document exists, the video title is set in the state.
- * If the chat document does not exist, an error is logged.
- *
- * @param {string} chatId - the ID of the private chat
- * @param {Function} setVideoTitle - a function to set the video title in the state
- *
- * @returns {Function} - a function to unsubscribe from the video title updates
- */
-export const fetchPrivateChatVideoTitle = (chatId, setVideoTitle) => {
-  console.log('calling fetchPrivateChatvideoTitle??');
-  const chatRef = doc(db, 'privateChats', chatId);
-  const unsubscribe = onSnapshot(chatRef, async (doc) => {
-    if (doc.exists()) {
-      const videoTitle = doc.data().videoTitle;
-      console.log('videoTitle = ', videoTitle);
-      setVideoTitle(videoTitle || 'no video');
-    } else {
-      console.error('Chat document does not exist.');
-      setVideoTitle('');
-    }
-  });
-  return unsubscribe;
-};
-
-/**
- * Fetches the URL of the YouTube video from the Firestore database corresponding to the private chat.
- *
- * @param {string} chatId - the ID of the private chat
- *
- * @returns {Promise<string>} - a promise that resolves to the URL of the YouTube video, or an empty string if the chat does not exist or has no URL
- */
-export const fetchPrivateChatVideoUrl = async (chatId) => {
-  try {
-    const chatRef = doc(db, 'privateChats', chatId);
-    const chatSnap = await getDoc(chatRef);
-    if (chatSnap.exists()) {
-      console.log('chatSnap.data().url:', chatSnap.data().url);
-      return chatSnap.data().url || '';
-    } else {
-      console.error('Chat document does not exist.');
-      return '';
-    }
-  } catch (error) {
-    console.error('Error fetching chat URL:', error);
-    return '';
-  }
-};
-
-/**
- * Fetches the video ID of a private chat from the Firestore database.
- *
- * @param {*} chatId
- *
- * @returns {Promise<string|null>} the video ID of the private chat with chatId, or null if the chat does not exist or has no URL
- */
-export const fetchPrivateChatVideoId = async (chatId) => {
-  try {
-    const chatRef = doc(db, 'privateChats', chatId);
-    const chatSnap = await getDoc(chatRef);
-    if (chatSnap.exists()) {
-      const url = chatSnap.data().url;
-      if (url) {
-        const videoId = new URL(url).searchParams.get('v'); //https://www.youtube.com/watch?v=abcd1234" returns abcd124 (the videoID)
-        return videoId || null;
-      }
-      return null;
-    } else {
-      console.error('Chat document does not exist.');
-      return null;
-    }
-  } catch (error) {
-    console.error('Error fetching chat URL:', error);
-    return null;
-  }
-};
-
-/**
- * NOTE: need to fix this, broken when people leave the chat
- * Fetches the members of a private chat from the Firestore database, members who accepted and are pending will be returned
- *
- * @param {*} chatId - the ID of the private chat
- *
- * @returns {Promise<Array>} - a promise that resolves to an array of members, where each member is an array containing the user object and their status ('accepted' or 'pending')
- */
-export const fetchPrivateChatMembers = async (chatId) => {
-  const chatRef = doc(db, 'privateChats', chatId);
-  const chatSnap = await getDoc(chatRef);
-
-  if (chatSnap.exists()) {
-    // Get the owner's data
-    const owner = await fetchUser(chatSnap.data().owner);
-
-    const q = query(
-      collection(db, 'privateChats', chatId, 'invitations'),
-      where('status', '!=', 'rejected')
-    );
-    const invitationsSnapshot = await getDocs(q);
-
-    //dont use .exists() for collections
-    if (!invitationsSnapshot.empty) {
-      // Get the invited users' data
-      const invitedUsersData = invitationsSnapshot.docs.map((inv) =>
-        inv.data()
-      );
-      //using colon brackets to destructure object
-      const invitedUsers = await Promise.all(
-        invitedUsersData.map(async ({ user, status }) => {
-          const userData = await fetchUser(user);
-          return [userData, status];
-        })
-      ); //get the entire user object from their id
-
-      // Combine the owner with the invited users
-      const allMembers = [
-        [owner, 'accepted'],
-        ...invitedUsers.filter(([userData, _]) => userData !== null),
-      ];
-
-      return allMembers;
-    } else {
-      //no users who are pending or accepted
-      return [[owner, 'accepted']];
-    }
-  } else {
-    console.error('Chat document does not exist.');
-    return [];
-  }
-};
-
-/**
- * Fetches the user object with the given userId from the Firestore database.
- *
- * @param {string} userId - the ID of the user to fetch
- *
- * @returns {Promise<Object|null>} - a promise that resolves to the user object if it exists, or null if it does not
- */
-export const fetchUser = async (userId) => {
-  const userRef = doc(db, 'users', userId);
-  const userSnap = await getDoc(userRef);
-
-  if (userSnap.exists()) {
-    return { ...userSnap.data(), uid: userSnap.id };
-  } else {
-    console.error('User document does not exist.');
-    return null;
-  }
-};
-
-/**
- * Adds the user to the list of invited users in the private chat with chatId.
- * If the user is already in the list, the function does nothing.
- * If the user is not in the list, the function adds the user to the list.
- *
- * @param {string} chatId - the ID of the private chat
- * @param {Object} inviter - the user who is inviting the user to the chat
- * @param {Object} invitee - the user who is being invited to the chat
- *
- * @returns {Promise<void>} - a promise that resolves when the user is added to the chat
- */
-export const addUserToPrivateChat = async (chatId, inviter, invitee) => {
-  //not using arrayunion because it doesn't work with the emulator
-  const invitationsRef = collection(db, 'privateChats', chatId, 'invitations');
-  const invitationsSnap = await getDocs(invitationsRef);
-  if (invitationsSnap.exists()) {
-    const q = query(invitationsRef, where('user', '==', invitee.uid));
-    const querySnapshot = await getDocs(q);
-    if (querySnapshot.empty) {
-      await addDoc(invitationsRef, { user: invitee.uid, status: 'pending' });
-    }
-  }
-
-  //IMPLEMENT REMOVING USER FROM PREVIOUS MEMBERS IF WE ARE RE-INVITING THEM
-
-  //update invitee's invitations collection
-  const invitationData = {
-    chatId: chatId,
-    invitedBy: inviter.uid,
-    invitedAt: new Date().toISOString(),
-    status: 'pending',
-  };
-
-  await addDoc(
-    collection(db, 'users', invitee.uid, 'invitations'),
-    invitationData
-  );
-};
-
-/**
- * Adds a reaction to a message in a private chat.
- *
- * @param {string} privateChatId - the ID of the private chat
- * @param {string} timestamp - the timestamp of the message to add a reaction to
- * @param {string} reaction - the reaction to add to the message
- *
- * @returns {Promise<void>} - a promise that resolves when the reaction is added
- */
-export const addPrivateChatReaction = async (
-  privateChatId,
-  //text,
-  timestamp,
-  reaction
-) => {
-  const q = query(
-    collection(db, 'privateChats', privateChatId, 'messages'),
-    where('timestamp', '==', timestamp)
-  );
-  try {
-    const querySnapshot = await getDocs(q);
-    querySnapshot.forEach((doc) => {
-      updateDoc(doc.ref, {
-        [`reactions.${reaction}`]: increment(1), //save reaction and count
-      });
+ await addDoc(collection(db, 'privateChats', chatRef.id, 'invitations'), {
+      userId: user.uid,
+      status: 'accepted',
+      userInvitationId: ownerInvRef.id,
     });
+
+    let ownerName = user.displayName || user.username || "User";
+    let ownerPhoto = user.photoURL || user.profilePicture || "";
+    
+    try {
+        const pInfo = await getDoc(doc(db, "publicUserInfo", user.uid));
+        if (pInfo.exists()) {
+            const d = pInfo.data();
+            ownerName = d.username || d.displayName || ownerName;
+            ownerPhoto = d.profilePicture || ownerPhoto;
+        }
+    } catch(e) { console.warn("Owner info fetch failed", e); }
+
+    // ВИПРАВЛЕННЯ: Встановлюємо membershipStatus як 'owner' замість 'accepted'
+    await setDoc(doc(db, "privateChats", chatRef.id, "members", user.uid), {
+      username: ownerName,
+      profilePicture: ownerPhoto,
+      bio: "No bio available.",
+      membershipStatus: "owner",
+    });
+
+    await setDoc(doc(db, "users", user.uid, "privateChats", chatRef.id), {
+      settingsLastUpdated: currentTime,
+      membersLastUpdated: currentTime,
+      pendingMembersLastUpdated: currentTime,
+    });
+
+    await inviteUsersToPrivateChat(
+      chatRef.id,
+      chatSettings.name,
+      chatIcon,
+      user.uid,
+      chatSettings.invitedUsers,
+      currentTime
+    );
+
+    return chatRef.id;
   } catch (error) {
+    console.error("Error creating chat:", error);
     throw error;
   }
 };
 
-/**
- * Fetches all private chats for the authenticated user.
- * It retrieves both chats where the user is an invited member and chats where the user is the owner.
- * The chat names are fetched and set in the state using the provided setPrivateChats function
- *
- * @param {Object} user - the authenticated user object
- * @param {Function} setPrivateChats - a function to set the private chats in the state
- *
- * @returns {Promise<void>} - a promise that resolves when the chats are fetched and set in the state
- */
-export const fetchChats = async (user, setPrivateChats) => {
-  // Query for chats where the user is an invited user
-  const invitedQuery = query(
-    collection(db, 'privateChats'),
-    where('members', 'array-contains', user.uid)
-  );
-  const ownerQuery = query(
-    collection(db, 'privateChats'),
-    where('owner', '==', user.uid)
-  );
-
-  const invitedSnapshot = await getDocs(invitedQuery);
-  const ownerSnapshot = await getDocs(ownerQuery);
-
-  const combinedSnapshots = [...invitedSnapshot.docs, ...ownerSnapshot.docs];
-
-  const fetchChatNames = async () => {
-    //Promise stores the result of an action, whether it succeeded or failed - Promise.all() takes an array of promises and returns a single promise that succeeds when all promises succeed
-    const chats = await Promise.all(
-      combinedSnapshots.map(async (doc) => {
-        const chatData = doc.data();
-        const chatName = await fetchPrivateChatName(doc.id);
-        //map each document to an object with the document id, chatData, and chatName
-        return { id: doc.id, ...chatData, name: chatName };
-      })
-    );
-
-    setPrivateChats(chats);
-  };
-
-  fetchChatNames();
+export const inviteUsersToPrivateChat = async (chatId, chatName, chatIcon, inviter, invitees, currentTime = new Date()) => {
+    const promises = invitees.map(async (u) => {
+      const invRef = await addDoc(collection(db, "users", u.uid, "invitations"), {
+        chatId, chatName, chatIcon: chatIcon || null, invitedBy: inviter, invitedAt: currentTime.toISOString(), status: "pending", chatStatus: "active"
+      });
+  
+      await addDoc(collection(db, "privateChats", chatId, "invitations"), {
+        userId: u.uid, status: "pending", userInvitationId: invRef.id
+      });
+    });
+    await Promise.all(promises);
 };
+
+export const addUserToPrivateChat = async (chatId, inviteeUid) => {
+    const auth = getAuth();
+    const user = auth.currentUser;
+    if (!user) return;
+    
+    const inviteeUser = { uid: inviteeUid }; 
+    const chatName = await fetchPrivateChatName(chatId);
+    
+    await inviteUsersToPrivateChat(chatId, chatName, null, user.uid, [inviteeUser]);
+};
+
+export const handleAcceptInvitation = async (invitationId, chatId, user) => {
+  const invitationRef = doc(db, 'users', user.uid, 'invitations', invitationId);
+  const invSnap = await getDoc(invitationRef);
+  
+  if (invSnap.exists()) {
+    await updateDoc(invitationRef, { status: 'accepted', acceptedAt: new Date() });
+
+    const q = query(collection(db, 'privateChats', chatId, 'invitations'), where('userInvitationId', '==', invitationId));
+    const snap = await getDocs(q);
+    if (!snap.empty) await updateDoc(snap.docs[0].ref, { status: 'accepted' });
+
+    let memberName = user.displayName || user.username || "User";
+    let memberPhoto = user.photoURL || user.profilePicture || "";
+
+    try {
+        const pInfo = await getDoc(doc(db, "publicUserInfo", user.uid));
+        if (pInfo.exists()) {
+            const d = pInfo.data();
+            memberName = d.username || d.displayName || memberName;
+            memberPhoto = d.profilePicture || memberPhoto;
+        }
+    } catch(e) {
+      console.warn("Could not fetch public info:", e);
+    }
+
+    // ВИПРАВЛЕННЯ: Використовуємо setDoc з merge замість просто setDoc
+    await setDoc(doc(db, "privateChats", chatId, "members", user.uid), {
+      username: memberName,
+      profilePicture: memberPhoto,
+      bio: "No bio available.",
+      membershipStatus: "member", 
+    }, { merge: true }); // Додаємо merge: true
+
+    await setDoc(doc(db, "users", user.uid, "privateChats", chatId), {
+      settingsLastUpdated: new Date(),
+      membersLastUpdated: new Date(),
+      pendingMembersLastUpdated: new Date(),
+    });
+  }
+};
+
+export const handleRejectInvitation = async (invitationId, chatId, user) => {
+  const ref = doc(db, 'users', user.uid, 'invitations', invitationId);
+  if ((await getDoc(ref)).exists()) {
+    await updateDoc(ref, { status: 'rejected' });
+  }
+};
+
+export const handleCancelInvitation = async (uId, invId) => {
+  const ref = doc(db, 'users', uId, 'invitations', invId);
+  if((await getDoc(ref)).exists()) await updateDoc(ref, { chatStatus: 'chatDeleted' });
+};
+
+export const leavePrivateChat = async (user, privateChatId) => {
+  try {
+    await deleteDoc(doc(db, "privateChats", privateChatId, "members", user.uid));
+    await deleteDoc(doc(db, "users", user.uid, "privateChats", privateChatId));
+  } catch(e) { console.error(e); }
+};
+
+export const removePrivateChatMember = async (userIdToRemove, chatId) => {
+    try {
+        await deleteDoc(doc(db, "privateChats", chatId, "members", userIdToRemove));
+        await deleteDoc(doc(db, "users", userIdToRemove, "privateChats", chatId));
+    } catch (e) { console.error(e); }
+};
+
+export const sendPrivateChatMessage = async (privateChatId, user, input, setInput) => {
+  if (input.trim() && privateChatId && user) {
+    await addDoc(collection(db, 'privateChats', privateChatId, 'messages'), {
+      text: input, authorUid: user.uid, timestamp: new Date().toISOString()
+    });
+    setInput('');
+  }
+};
+
+export const deletePrivateChatMessage = async (cId, mId) => {
+    await deleteDoc(doc(db, 'privateChats', cId, 'messages', mId));
+};
+
+export const updatePrivateChatName = async ({ id }, newName) => {
+    const ref = doc(db, 'privateChats', id);
+    await updateDoc(ref, { name: newName });
+};
+
+export const updatePrivateChatUrl = async ({ id }, newUrl) => {
+    const ref = doc(db, 'privateChats', id);
+    await updateDoc(ref, { url: newUrl });
+};
+
+export const updatePrivateChatIcon = async (selectedChat, file) => {
+    const url = await uploadChatIcon(selectedChat.id, file);
+    const ref = doc(db, "privateChats", selectedChat.id);
+    await updateDoc(ref, { icon: url });
+};
+
+export const uploadChatIcon = async (chatId, file) => {
+    try {
+      const refStr = ref(storage, `chatIcons/${chatId}`);
+      const meta = { contentType: getContentType(file) };
+      const snap = await uploadBytes(refStr, file, meta);
+      return await getDownloadURL(snap.ref);
+    } catch (e) { throw e; }
+};
+
+export const fetchUser = async (id) => {
+    const s = await getDoc(doc(db, "users", id));
+    return s.exists() ? { ...s.data(), uid: s.id } : null;
+};
+
+// Dummy exports
+export const simulateInvite = async () => {};
+export const addPrivateChatReaction = async (cId, ts, reaction) => {
+    const q = query(collection(db, "privateChats", cId, "messages"), where("timestamp", "==", ts));
+    const snap = await getDocs(q);
+    snap.forEach(d => updateDoc(d.ref, { [`reactions.${reaction}`]: increment(1) }));
+};
+export const logDeletedPrivateChatActivity = () => {};
+export const logPrivateChatActivity = () => {};

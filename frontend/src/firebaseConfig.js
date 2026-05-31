@@ -39,12 +39,13 @@ import { getStorage } from 'firebase/storage';
 
 //object with credentials for Firebase project
 const firebaseConfig = {
-  apiKey: 'AIzaSyBg6ZZfBKO7dn-_SXPl3pNbIilN6-Wx86w', // API key for Firebase project - this is meant to be on the client-side, but we use security rules to prevent unauthorized access
-  authDomain: 'k-pop-livestreaming-platform.firebaseapp.com',
-  projectId: 'k-pop-livestreaming-platform',
-  storageBucket: 'k-pop-livestreaming-platform.appspot.com',
-  messagingSenderId: '554599515355',
-  appId: '1:554599515355:web:0abf6bdde5bbf39119b8fe',
+  apiKey: "AIzaSyCSJgprIaGHqunzuJ17gAev7_lR_51SoFU",
+  authDomain: "livestreaming-platform-937be.firebaseapp.com",
+  projectId: "livestreaming-platform-937be",
+  storageBucket: "livestreaming-platform-937be.firebasestorage.app",
+  messagingSenderId: "104361532548",
+  appId: "1:104361532548:web:52913d5de29fe2d4d7f6d1",
+  measurementId: "G-7PPRK1BK30"
 };
 
 //start firebase app with config

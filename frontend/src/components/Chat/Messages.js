@@ -19,7 +19,7 @@ import {
 import Message from './Message';
 import info from '../../assets/info.svg';
 
-/**
+/**я
  * Messages component renders a list of Message components and manages the scroll behavior.
  * It also provides a button to toggle the visibility of a popup, such as an info panel.
  * Depending on value of privacyLevel argument, the messages are either native or private

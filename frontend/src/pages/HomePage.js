@@ -1,10 +1,9 @@
 /**
  * @file HomePage.js
- * @author Jonas Matulis, Simon Tenedero
- * @created 2024-XX-XX
- * @lastModified 2025-07-07
  * @description file containing the HomePage component.
  */
+
+import { Link } from 'react-router-dom';
 
 /**
  * HomePage component serves as the landing page for the application. Prompts users to log in to watch livestreams.
@@ -19,6 +18,14 @@ const HomePage = () => {
         <span className="text-primary">livestreaming</span> prototype. <br />{' '}
         login to watch.
       </h1>
+      <div className="ml-5 mb-10">
+        <Link
+          to="/archive"
+          className="btn btn-outline btn-primary text-lg px-8 py-3"
+        >
+          watch archived streams
+        </Link>
+      </div>
     </div>
   );
 };

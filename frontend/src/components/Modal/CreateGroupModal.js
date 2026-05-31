@@ -7,7 +7,7 @@
  */
 
 import React, { useState } from 'react';
-import { createRole, AVAILABLE_FEATURES } from '../../utils/roleUtils.js';
+import { createRoleCloud, AVAILABLE_FEATURES } from '../../utils/roleUtils.js'; // ВИПРАВЛЕНО: createRole -> createRoleCloud
 
 /**
  * This component is a modal (popup) that allows users to create a new user group (this is used in the admin panel).
@@ -113,7 +113,7 @@ const CreateGroupModal = ({ isOpen, onClose, onGroupCreated }) => {
     try {
       console.log(formData);
 
-      await createRole(formData);
+      await createRoleCloud(formData); // ВИПРАВЛЕНО: createRole -> createRoleCloud
 
       // Reset form
       setFormData({
